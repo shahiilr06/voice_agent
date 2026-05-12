@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-dotenv
+livekit
+livekit-api
+livekit-agents[sarvam]
+litellm

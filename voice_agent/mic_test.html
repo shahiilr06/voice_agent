@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mic Test</title>
+</head>
+<body>
+    <h1>Microphone Test</h1>
+    <button id="testBtn">Test Microphone</button>
+    <p id="status">Click button to test</p>
+    
+    <script>
+        document.getElementById('testBtn').onclick = async () => {
+            const status = document.getElementById('status');
+            try {
+                status.textContent = 'Requesting microphone...';
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                status.textContent = '✅ Microphone works! You can close this tab.';
+                status.style.color = 'green';
+                setTimeout(() => {
+                    stream.getTracks().forEach(track => track.stop());
+                }, 2000);
+            } catch (err) {
+                status.textContent = '❌ Error: ' + err.message;
+                status.style.color = 'red';
+                console.error(err);
+            }
+        };
+    </script>
+</body>
+</html>

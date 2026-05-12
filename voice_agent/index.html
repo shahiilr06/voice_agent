@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Sunrise Hotel Voice Agent</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding-top: 50px; }
+        #status { color: gray; margin-bottom: 20px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 0 8px; }
+        #transcript { margin-top: 20px; text-align: left; max-width: 700px; margin-left: auto; margin-right: auto; border: 1px solid #ddd; padding: 10px; height: 340px; overflow-y: auto; }
+        .user { color: #0b5fff; }
+        .agent { color: #1a7f37; }
+        .interim { opacity: 0.7; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>Sunrise Hotel Voice Agent (LiveKit)</h1>
+    <div id="status">Disconnected</div>
+    <button id="startBtn">Start Conversation</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <div id="transcript"></div>
+
+    <script src="/static/livekit-client.umd.min.js"></script>
+    <script>
+        const startBtn = document.getElementById("startBtn");
+        const stopBtn = document.getElementById("stopBtn");
+        const statusDiv = document.getElementById("status");
+        const transcriptDiv = document.getElementById("transcript");
+
+        let room = null;
+        let liveUserMessage = null;
+        let lastAgentMessage = null;
+        let remoteAudioElement = null;
+        let micPermissionGranted = false;
+
+        function setStatus(text) {
+            statusDiv.textContent = text;
+        }
+
+        function appendTranscript(kind, text, className) {
+            const p = document.createElement("p");
+            p.className = className;
+            p.textContent = `${kind}: ${text}`;
+            transcriptDiv.appendChild(p);
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+            return p;
+        }
+
+        function handleAgentEvent(evt) {
+            if (!evt || typeof evt !== "object") return;
+            const type = evt.type || "";
+            const text = evt.text || "";
+
+            if (type === "status") {
+                setStatus(text || "Connected");
+                return;
+            }
+
+            if (type === "user_interim") {
+                if (!text) {
+                    if (liveUserMessage) {
+                        liveUserMessage.remove();
+                        liveUserMessage = null;
+                    }
+                    return;
+                }
+                if (!liveUserMessage) {
+                    liveUserMessage = appendTranscript("User (live)", text, "user interim");
+                } else {
+                    liveUserMessage.textContent = `User (live): ${text}`;
+                }
+                return;
+            }
+
+            if (type === "user") {
+                if (liveUserMessage) {
+                    liveUserMessage.remove();
+                    liveUserMessage = null;
+                }
+                appendTranscript("User", text, "user");
+                lastAgentMessage = null;
+                return;
+            }
+
+            if (type === "agent") {
+                if (!lastAgentMessage) {
+                    lastAgentMessage = appendTranscript("Agent", "", "agent");
+                }
+                lastAgentMessage.textContent = `Agent: ${text}`;
+            }
+        }
+
+        function decodeDataPacket(payload) {
+            if (typeof payload === "string") return payload;
+            if (payload instanceof Uint8Array) return new TextDecoder().decode(payload);
+            if (payload instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(payload));
+            return "";
+        }
+
+        async function fetchToken() {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 12000);
+            const resp = await fetch("/livekit/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
+
+            const raw = await resp.text();
+            let data = {};
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch {
+                throw new Error(`Token endpoint returned invalid JSON (${resp.status})`);
+            }
+
+            if (!resp.ok) {
+                const detail = data.detail || "Failed to fetch LiveKit token";
+                throw new Error(`${detail} (HTTP ${resp.status})`);
+            }
+
+            if (!data.ws_url || !data.token) {
+                throw new Error("Token response missing ws_url or token");
+            }
+            return data;
+        }
+
+        function roomOptions() {
+            return {
+                adaptiveStream: true,
+                dynacast: true,
+            };
+        }
+
+        function resolveGetUserMedia() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                return navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            }
+            const legacyGetUserMedia =
+                navigator.getUserMedia ||
+                navigator.webkitGetUserMedia ||
+                navigator.mozGetUserMedia;
+            if (legacyGetUserMedia) {
+                return (constraints) =>
+                    new Promise((resolve, reject) =>
+                        legacyGetUserMedia.call(navigator, constraints, resolve, reject)
+                    );
+            }
+            throw new Error("Microphone API unavailable: getUserMedia is not supported in this browser.");
+        }
+
+        async function ensureMicrophoneAccess() {
+            const isLocalhost = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+            if (!window.isSecureContext && !isLocalhost) {
+                throw new Error("Microphone requires HTTPS (or localhost). Open this app on a secure origin.");
+            }
+            const getUserMedia = resolveGetUserMedia();
+            const stream = await getUserMedia({ audio: true });
+            for (const track of stream.getTracks()) {
+                track.stop();
+            }
+        }
+
+        function createRoom() {
+            if (!window.LivekitClient) {
+                throw new Error("LiveKit client library not loaded. Check internet/CDN access.");
+            }
+
+            const createdRoom = new LivekitClient.Room(roomOptions());
+
+            createdRoom.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+                if (track.kind !== "audio") return;
+                if (!remoteAudioElement) {
+                    remoteAudioElement = track.attach();
+                    remoteAudioElement.autoplay = true;
+                    remoteAudioElement.playsInline = true;
+                    remoteAudioElement.style.display = "none";
+                    document.body.appendChild(remoteAudioElement);
+                } else {
+                    track.attach(remoteAudioElement);
+                }
+            });
+
+            createdRoom.on(LivekitClient.RoomEvent.DataReceived, (payload) => {
+                try {
+                    const text = decodeDataPacket(payload);
+                    if (!text) return;
+                    const evt = JSON.parse(text);
+                    handleAgentEvent(evt);
+                } catch (e) {
+                    console.error("Data packet parse failed:", e);
+                }
+            });
+
+            createdRoom.on(LivekitClient.RoomEvent.Reconnecting, () => {
+                setStatus("Reconnecting...");
+            });
+
+            createdRoom.on(LivekitClient.RoomEvent.Reconnected, () => {
+                setStatus("Reconnected. Listening...");
+            });
+
+            createdRoom.on(LivekitClient.RoomEvent.Disconnected, () => {
+                setStatus("Disconnected");
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            });
+
+            return createdRoom;
+        }
+
+        async function connectWithRetry(createdRoom, wsUrl, token, maxAttempts = 3) {
+            let lastError = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    setStatus(`Connecting to LiveKit (${attempt}/${maxAttempts})...`);
+                    await createdRoom.connect(wsUrl, token);
+                    return;
+                } catch (err) {
+                    lastError = err;
+                    if (attempt < maxAttempts) {
+                        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+                    }
+                }
+            }
+            throw lastError || new Error("Unknown LiveKit connection error");
+        }
+
+        function formatConnectionError(err) {
+            const message = (err && err.message) ? err.message : String(err || "Unknown error");
+            const lower = message.toLowerCase();
+            const name = (err && err.name) ? err.name : "";
+
+            if (name === "NotAllowedError" || lower.includes("permission") || lower.includes("microphone")) {
+                return "Microphone permission denied. Allow mic access and retry.";
+            }
+            if (name === "NotFoundError" || lower.includes("requested device not found")) {
+                return "No microphone device found. Connect a mic and retry.";
+            }
+            if (
+                lower.includes("getusermedia") ||
+                lower.includes("mediadevices") ||
+                lower.includes("microphone api unavailable")
+            ) {
+                return "Microphone is not supported in this browser. Use a modern Chrome/Edge/Firefox browser.";
+            }
+            if (lower.includes("https") || lower.includes("secure origin") || lower.includes("secure context")) {
+                return "Microphone requires HTTPS or localhost. Open the app on a secure URL.";
+            }
+            if (name === "AbortError" || lower.includes("timed out")) {
+                return "Connection timed out. Check internet and LiveKit server URL.";
+            }
+            if (lower.includes("failed to fetch") || lower.includes("network")) {
+                return "Cannot reach token/server endpoint. Ensure FastAPI is running on this host.";
+            }
+            if (lower.includes("401") || lower.includes("unauthorized") || lower.includes("jwt")) {
+                return "LiveKit auth failed. Check LIVEKIT_API_KEY/SECRET and token endpoint config.";
+            }
+            if (lower.includes("library not loaded") || lower.includes("livekitclient")) {
+                return "LiveKit JS SDK failed to load. Check internet/CDN access.";
+            }
+            return `Connection failed: ${message}`;
+        }
+
+        async function connectLiveKit() {
+            setStatus("Connecting...");
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+
+            setStatus("Checking microphone...");
+            await ensureMicrophoneAccess();
+            const data = await fetchToken();
+            const createdRoom = createRoom();
+            room = createdRoom;
+
+            await connectWithRetry(createdRoom, data.ws_url, data.token, 3);
+            setStatus("Connected. Enabling microphone...");
+            await createdRoom.localParticipant.setMicrophoneEnabled(true);
+            setStatus("Listening...");
+            stopBtn.disabled = false;
+        }
+
+        async function disconnectLiveKit(options = {}) {
+            const { silent = false } = options;
+            if (room) {
+                try {
+                    await room.disconnect();
+                } catch (err) {
+                    console.error("disconnect failed", err);
+                }
+            }
+            room = null;
+            if (remoteAudioElement) {
+                remoteAudioElement.remove();
+                remoteAudioElement = null;
+            }
+            stopBtn.disabled = true;
+            startBtn.disabled = false;
+            if (!silent) {
+                setStatus("Disconnected");
+            }
+        }
+
+        startBtn.onclick = async () => {
+            try {
+                await connectLiveKit();
+            } catch (err) {
+                console.error(err);
+                await disconnectLiveKit({ silent: true });
+                setStatus(formatConnectionError(err));
+            }
+        };
+
+        stopBtn.onclick = async () => {
+            await disconnectLiveKit();
+        };
+
+        // Auto-request microphone permission on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                setStatus("Checking microphone access...");
+                await ensureMicrophoneAccess();
+                micPermissionGranted = true;
+                setStatus("Microphone ready. Click 'Start Conversation' to begin.");
+                startBtn.style.backgroundColor = "#28a745";
+            } catch (err) {
+                console.error("Microphone check failed:", err);
+                setStatus(formatConnectionError(err));
+                startBtn.style.backgroundColor = "#dc3545";
+            }
+        });
+    </script>
+</body>
+</html>
