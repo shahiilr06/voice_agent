@@ -22,7 +22,7 @@ This document serves as an exhaustive engineering reference detailing every real
 | # | Error / Symptom | Component | Root Cause | Solution |
 | :--- | :--- | :--- | :--- | :--- |
 | **1** | `NameError: name 'asyncio' is not defined` | `agent/sarvam_tts.py` | Missing `import asyncio` in TTS module. | Added `import asyncio` at the top of `sarvam_tts.py`. |
-| **2** | Call drops immediately upon pressing key | Twilio SIP Bridge | Outdated `hotel:password123@...` URI caused LiveKit 401 auth rejection. | Cleared trunk auth in LiveKit Cloud and updated URI to `sip:hotel@vw9lj499216.sip.livekit.cloud`. |
+| **2** | Call drops immediately upon pressing key | Twilio SIP Bridge | Outdated `hotel:unmatched_pass@...` URI caused LiveKit 401 auth rejection. | Cleared trunk auth in LiveKit Cloud and updated URI to `sip:hotel@vw9lj499216.sip.livekit.cloud`. |
 | **3** | AI voice unclear / robotic / muffled over phone | `agent/sarvam_tts.py` | 24kHz audio suffered aliasing downsampling to 8kHz/16kHz telephone codecs; pace 1.15 was rushed. | Switched to native **16kHz HD Telephony** rate and calibrated **pace to 1.0**. |
 | **4** | `ModuleNotFoundError: No module named 'agent'` | `agent/worker.py` | Invoking from `agent/` folder excluded project root from `sys.path`. | Added dynamic `PROJECT_ROOT` insertion into `sys.path[0]`. |
 | **5** | Double overlapping AI voices | `agent/worker.py` | Subscribed to both `user_input_transcribed` and `user_speech_committed`. | Removed duplicate event and introduced an atomic turn lock (`is_processing_turn`). |
@@ -73,10 +73,10 @@ When an outbound call is answered, Twilio plays the trial message: *"You have a 
 Twilio call logs revealed an immediate `failed` status for the SIP leg:
 ```
 Call SID: CAfaa775046b187e2d75e141a7a36e816b
-To: sip:hotel:password123@vw9lj499216.sip.livekit.cloud
+To: sip:hotel:unmatched_pass@vw9lj499216.sip.livekit.cloud
 Status: failed
 ```
-LiveKit Cloud's Inbound Trunk rejected `hotel:password123` with a SIP 401/404 error because the trunk credentials didn't match.
+LiveKit Cloud's Inbound Trunk rejected `hotel:unmatched_pass` with a SIP 401/404 error because the trunk credentials didn't match.
 
 #### Fix
 1. Cleared the digest credentials on LiveKit Cloud Inbound Trunk `ST_FqcE6X4R76nP` using `update_inbound_trunk_fields(auth_username='', auth_password='')`.

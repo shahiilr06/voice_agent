@@ -122,7 +122,7 @@ async def dial_exotel_call(
     """
     api_key = os.getenv("EXOTEL_API_KEY")
     api_token = os.getenv("EXOTEL_API_TOKEN")
-    account_sid = os.getenv("EXOTEL_ACCOUNT_SID", "karunya6")
+    account_sid = os.getenv("EXOTEL_ACCOUNT_SID", "")
     subdomain = os.getenv("EXOTEL_SUBDOMAIN", "api.exotel.com")
     resolved_caller_id = caller_id or os.getenv("EXOTEL_CALLER_ID", "08047291749")
     resolved_app_url = app_url or os.getenv(
@@ -199,7 +199,7 @@ async def get_exotel_account_info() -> Dict[str, Any]:
     """Retrieve Exotel account details and verification state."""
     api_key = os.getenv("EXOTEL_API_KEY")
     api_token = os.getenv("EXOTEL_API_TOKEN")
-    account_sid = os.getenv("EXOTEL_ACCOUNT_SID", "karunya6")
+    account_sid = os.getenv("EXOTEL_ACCOUNT_SID", "")
     subdomain = os.getenv("EXOTEL_SUBDOMAIN", "api.exotel.com")
 
     if not (api_key and api_token and account_sid):
